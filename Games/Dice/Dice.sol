@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.0;
 
-import "./Common.sol";
+import "../Common.sol";
 
 /**
- * @title Coin Flip game, players predict if outcome will be heads or tails
+ * @title Dice game, players predict if outcome will be over or under the selected number
  */
 
-contract CoinFlip is Common {
+contract Dice is Common {
     using SafeERC20 for IERC20;
 
     constructor(address _bankroll, address _vrf, address link_eth_feed) {
@@ -17,7 +17,7 @@ contract CoinFlip is Common {
         ChainLinkVRF = _vrf;
     }
 
-    struct CoinFlipGame {
+    struct DiceGame {
         uint256 wager;
         uint256 stopGain;
         uint256 stopLoss;
@@ -25,11 +25,12 @@ contract CoinFlip is Common {
         address tokenAddress;
         uint64 blockNumber;
         uint32 numBets;
-        bool isHeads;
+        uint32 multiplier;
+        bool isOver;
     }
 
-    mapping(address => CoinFlipGame) coinFlipGames;
-    mapping(uint256 => address) coinIDs;
+    mapping(address => DiceGame) diceGames;
+    mapping(uint256 => address) diceIDs;
 
     /**
      * @dev event emitted by the VRF callback with the bet results
@@ -37,35 +38,36 @@ contract CoinFlip is Common {
      * @param wager wager amount
      * @param payout total payout transfered to the player
      * @param tokenAddress address of token the wager was made and payout, 0 address is considered the native coin
-     * @param coinOutcomes results of coinFlip, 1-> Heads, 0 ->Tails
+     * @param diceOutcomes results of dice roll, range 0-9999
      * @param payouts individual payouts for each bet
      * @param numGames number of games performed
      */
-    event CoinFlip_Outcome_Event(
+    event Dice_Outcome_Event(
         address indexed playerAddress,
         uint256 wager,
         uint256 payout,
         address tokenAddress,
-        uint8[] coinOutcomes,
+        uint256[] diceOutcomes,
         uint256[] payouts,
         uint32 numGames
     );
 
     /**
-     * @dev event emitted when a refund is done in coin flip
+     * @dev event emitted when a refund is done in dice
      * @param player address of the player reciving the refund
      * @param wager amount of wager that was refunded
      * @param tokenAddress address of token the refund was made in
      */
-    event CoinFlip_Refund_Event(
+    event Dice_Refund_Event(
         address indexed player,
         uint256 wager,
         address tokenAddress
     );
 
-    error WagerAboveLimit(uint256 wager, uint256 maxWager);
     error AwaitingVRF(uint256 requestID);
+    error InvalidMultiplier(uint256 max, uint256 min, uint256 multiplier);
     error InvalidNumBets(uint256 maxNumBets);
+    error WagerAboveLimit(uint256 wager, uint256 maxWager);
     error NotAwaitingVRF();
     error BlockNumberTooLow(uint256 have, uint256 want);
     error OnlyCoordinatorCanFulfill(address have, address want);
@@ -74,41 +76,47 @@ contract CoinFlip is Common {
      * @dev function to get current request player is await from VRF, returns 0 if none
      * @param player address of the player to get the state
      */
-    function CoinFlip_GetState(
+    function Dice_GetState(
         address player
-    ) external view returns (CoinFlipGame memory) {
-        return (coinFlipGames[player]);
+    ) external view returns (DiceGame memory) {
+        return (diceGames[player]);
     }
 
     /**
-     * @dev Function to play Coin Flip, takes the user wager saves bet parameters and makes a request to the VRF
+     * @dev Function to play Dice, takes the user wager saves bet parameters and makes a request to the VRF
      * @param wager wager amount
      * @param tokenAddress address of token to bet, 0 address is considered the native coin
      * @param numBets number of bets to make, and amount of random numbers to request
      * @param stopGain treshold value at which the bets stop if a certain profit is obtained
      * @param stopLoss treshold value at which the bets stop if a certain loss is obtained
-     * @param isHeads if bet selected heads or Tails
+     * @param isOver if true dice outcome must be over the selected number, false must be under
+     * @param multiplier selected multiplier for the wager range 10421-9900000, multiplier values divide by 10000
      */
-    function CoinFlip_Play(
+    function Dice_Play(
         uint256 wager,
+        uint32 multiplier,
         address tokenAddress,
-        bool isHeads,
+        bool isOver,
         uint32 numBets,
         uint256 stopGain,
         uint256 stopLoss
     ) external payable nonReentrant {
-        if (coinFlipGames[msg.sender].requestID != 0) {
-            revert AwaitingVRF(coinFlipGames[msg.sender].requestID);
+        if (!(multiplier >= 10421 && multiplier <= 9900000)) {
+            revert InvalidMultiplier(9900000, 10421, multiplier);
+        }
+        if (diceGames[msg.sender].requestID != 0) {
+            revert AwaitingVRF(diceGames[msg.sender].requestID);
         }
         if (!(numBets > 0 && numBets <= 100)) {
             revert InvalidNumBets(100);
         }
 
-        _kellyWager(wager, tokenAddress);
+        _kellyWager(wager, tokenAddress, multiplier);
         _transferWager(tokenAddress, wager * numBets, 1000000);
+
         uint256 id = _requestRandomWords(numBets);
 
-        coinFlipGames[msg.sender] = CoinFlipGame(
+        diceGames[msg.sender] = DiceGame(
             wager,
             stopGain,
             stopLoss,
@@ -116,16 +124,17 @@ contract CoinFlip is Common {
             tokenAddress,
             uint64(block.number),
             numBets,
-            isHeads
+            multiplier,
+            isOver
         );
-        coinIDs[id] = msg.sender;
+        diceIDs[id] = msg.sender;
     }
 
     /**
      * @dev Function to refund user in case of VRF request failling
      */
-    function CoinFlip_Refund() external nonReentrant {
-        CoinFlipGame storage game = coinFlipGames[msg.sender];
+    function Dice_Refund() external nonReentrant {
+        DiceGame storage game = diceGames[msg.sender];
         if (game.requestID == 0) {
             revert NotAwaitingVRF();
         }
@@ -136,8 +145,8 @@ contract CoinFlip is Common {
         uint256 wager = game.wager * game.numBets;
         address tokenAddress = game.tokenAddress;
 
-        delete (coinIDs[game.requestID]);
-        delete (coinFlipGames[msg.sender]);
+        delete (diceIDs[game.requestID]);
+        delete (diceGames[msg.sender]);
 
         if (tokenAddress == address(0)) {
             (bool success, ) = payable(msg.sender).call{value: wager}("");
@@ -147,7 +156,7 @@ contract CoinFlip is Common {
         } else {
             IERC20(tokenAddress).safeTransfer(msg.sender, wager);
         }
-        emit CoinFlip_Refund_Event(msg.sender, wager, tokenAddress);
+        emit Dice_Refund_Event(msg.sender, wager, tokenAddress);
     }
 
     /**
@@ -169,15 +178,19 @@ contract CoinFlip is Common {
         uint256 requestId,
         uint256[] memory randomWords
     ) internal {
-        address playerAddress = coinIDs[requestId];
+        address playerAddress = diceIDs[requestId];
         if (playerAddress == address(0)) revert();
-        CoinFlipGame storage game = coinFlipGames[playerAddress];
+        DiceGame storage game = diceGames[playerAddress];
 
         int256 totalValue;
         uint256 payout;
         uint32 i;
-        uint8[] memory coinFlip = new uint8[](game.numBets);
+        uint256[] memory diceOutcomes = new uint256[](game.numBets);
         uint256[] memory payouts = new uint256[](game.numBets);
+
+        uint256 winChance = 99000000000 / game.multiplier;
+        uint256 numberToRollOver = 10000000 - winChance;
+        uint256 gamePayout = (game.multiplier * game.wager) / 10000;
 
         address tokenAddress = game.tokenAddress;
 
@@ -189,18 +202,18 @@ contract CoinFlip is Common {
                 break;
             }
 
-            coinFlip[i] = uint8(randomWords[i] % 2);
-
-            if (coinFlip[i] == 1 && game.isHeads == true) {
-                totalValue += int256((game.wager * 9800) / 10000);
-                payout += (game.wager * 19800) / 10000;
-                payouts[i] = (game.wager * 19800) / 10000;
+            diceOutcomes[i] = randomWords[i] % 10000000;
+            if (diceOutcomes[i] >= numberToRollOver && game.isOver == true) {
+                totalValue += int256(gamePayout - game.wager);
+                payout += gamePayout;
+                payouts[i] = gamePayout;
                 continue;
             }
-            if (coinFlip[i] == 0 && game.isHeads == false) {
-                totalValue += int256((game.wager * 9800) / 10000);
-                payout += (game.wager * 19800) / 10000;
-                payouts[i] = (game.wager * 19800) / 10000;
+
+            if (diceOutcomes[i] <= winChance && game.isOver == false) {
+                totalValue += int256(gamePayout - game.wager);
+                payout += gamePayout;
+                payouts[i] = gamePayout;
                 continue;
             }
 
@@ -209,18 +222,18 @@ contract CoinFlip is Common {
 
         payout += (game.numBets - i) * game.wager;
 
-        emit CoinFlip_Outcome_Event(
+        emit Dice_Outcome_Event(
             playerAddress,
             game.wager,
             payout,
             tokenAddress,
-            coinFlip,
+            diceOutcomes,
             payouts,
             i
         );
         _transferToBankroll(tokenAddress, game.wager * game.numBets);
-        delete (coinIDs[requestId]);
-        delete (coinFlipGames[playerAddress]);
+        delete (diceIDs[requestId]);
+        delete (diceGames[playerAddress]);
         if (payout != 0) {
             _transferPayout(playerAddress, payout, tokenAddress);
         }
@@ -229,14 +242,18 @@ contract CoinFlip is Common {
     /**
      * @dev calculates the maximum wager allowed based on the bankroll size
      */
-    function _kellyWager(uint256 wager, address tokenAddress) internal view {
+    function _kellyWager(
+        uint256 wager,
+        address tokenAddress,
+        uint256 multiplier
+    ) internal view {
         uint256 balance;
         if (tokenAddress == address(0)) {
             balance = address(Bankroll).balance;
         } else {
             balance = IERC20(tokenAddress).balanceOf(address(Bankroll));
         }
-        uint256 maxWager = (balance * 1122448) / 100000000;
+        uint256 maxWager = (balance * (11000 - 10890)) / (multiplier - 10000);
         if (wager > maxWager) {
             revert WagerAboveLimit(wager, maxWager);
         }
