@@ -314,7 +314,7 @@ contract Common is ReentrancyGuard {
         s_requestId = VRFCoordinatorV2Interface(ChainLinkVRF)
             .requestRandomWords(
                 0x114f3da0a805b6a67d6e9cd2ec746f7028f1b7376365af575cfea3550dd1aa04,
-                2,
+                3,
                 3,
                 2500000,
                 numWords
