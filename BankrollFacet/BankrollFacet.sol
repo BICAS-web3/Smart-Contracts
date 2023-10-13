@@ -3,7 +3,7 @@ pragma solidity ^0.8.0;
 
 import {WithStorage} from "./LibStorage.sol";
 import {LibDiamond} from "./LibDiamond.sol";
-import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {SafeERC20, IERC20} from "@openzeppelin/contracts@4.9/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title BankrollFacet, Contract responsible for keeping the bankroll and distribute payouts
@@ -28,17 +28,50 @@ contract BankrollFacet is WithStorage {
      * @param payout new payout percentage
      */
     event BankRoll_Max_Payout_Changed(uint256 payout);
+    event PriceSetter_Changed(address PriceSetter);
+    event Price_Changed(address token, uint256 price);
+    event MinWager_Changed(uint minWager);
 
     error InvalidGameAddress();
     error TransferFailed();
+    error TokenNotRegistered();
+    error NotPriceSetter();
+    error ArraysLengthsAreDifferent();
 
-    constructor(address _contractOwner) payable{
+    mapping(address => uint256) tokensPrices;
+    address public priceSetter;
+    /// Minimal wager in USDT
+    uint256 public minWager;
+
+    constructor(address _contractOwner, address setter) payable{
         LibDiamond.setContractOwner(_contractOwner);
-     }
+        priceSetter = setter;
+    }
 
     modifier onlyOwner() {
         LibDiamond.enforceIsContractOwner();
         _;
+    }
+
+    /**
+    * @dev set new price setter account
+    */
+    function setPriceSetter(
+        address setter
+    ) external onlyOwner{
+        priceSetter = setter;
+        emit PriceSetter_Changed(setter);
+    }
+
+    /**
+    * @dev sets new minimal wager in USDT
+    * @param wager - new minimal wager in USDT
+    */
+    function setMinWager(
+        uint256 wager
+    ) external onlyOwner {
+        minWager = wager;
+        emit MinWager_Changed(wager);
     }
 
     /**
@@ -84,15 +117,54 @@ contract BankrollFacet is WithStorage {
     }
 
     /**
+     * @dev function to get token's price
+     * @param tokenAddress - address of a token to get the price of
+     */
+    function getTokenPrice(address tokenAddress) external view returns (uint256 price){
+        price = tokensPrices[tokenAddress];
+    }
+
+    /**
+     * @dev function to set new token price
+     * @param tokenAddresses - addresses of tokens to set the price of
+     * @param prices - prices of the tokens in USDT
+     */
+    function setTokensPrices(address[] calldata tokenAddresses, uint256[] calldata prices) external{
+        if(msg.sender != priceSetter){
+            revert NotPriceSetter();
+        }
+        if(tokenAddresses.length != prices.length){
+            revert ArraysLengthsAreDifferent();
+        }
+        for(uint i=0; i<tokenAddresses.length; i++){
+            address tokenAddress = tokenAddresses[i];
+            uint256 price = prices[i];
+            if(!gs().isTokenAllowed[tokenAddress]){
+                revert TokenNotRegistered();
+            }
+            tokensPrices[tokenAddress] = price;
+            emit Price_Changed(tokenAddress, price);
+        }
+    }
+
+
+    /**
      * @dev function to check if payout can be given
      * @param game address of the game contract
      * @param tokenAddress address of the token the wager is made
+     * @param wager wagered amount
      */
     function getIsValidWager(
         address game,
-        address tokenAddress
+        address tokenAddress,
+        uint256 wager
     ) external view returns (bool) {
-        return (gs().isGame[game] && gs().isTokenAllowed[tokenAddress]);
+        uint256 wagerUSDT = (wager / 1000000000000000000)*tokensPrices[tokenAddress];
+        return (
+            gs().isGame[game] 
+            && gs().isTokenAllowed[tokenAddress] 
+            && tokensPrices[tokenAddress] != 0
+            && wagerUSDT >= 5000000000000000000);
     }
 
     /**

@@ -4,14 +4,15 @@ pragma solidity ^0.8.0;
 import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {SafeERC20, IERC20} from "@openzeppelin/contracts@4.9/token/ERC20/utils/SafeERC20.sol";
 
 interface IBankRoll {
     function getIsGame(address game) external view returns (bool);
 
     function getIsValidWager(
         address game,
-        address tokenAddress
+        address tokenAddress,
+        uint256 wager
     ) external view returns (bool);
 
     function transferPayout(
@@ -74,7 +75,7 @@ contract Common is ReentrancyGuard {
         uint256 wager,
         uint256 gasAmount
     ) internal {
-        if (!Bankroll.getIsValidWager(address(this), tokenAddress)) {
+        if (!Bankroll.getIsValidWager(address(this), tokenAddress, wager)) {
             revert NotApprovedBankroll();
         }
         if (wager == 0) {
@@ -86,7 +87,8 @@ contract Common is ReentrancyGuard {
         if (suspended) {
             revert PlayerSuspended(suspendedTime);
         }
-        uint256 VRFfee = getVRFFee(gasAmount);
+        //IERC20(tokenAddress).transferFrom(msg.sender, address(this), wager);
+        uint256 VRFfee = getVRFFee(gasAmount)/2;
         if (tokenAddress == address(0)) {
             if (msg.value < wager + VRFfee) {
                 revert InvalidValue(wager + VRFfee, msg.value);
@@ -96,12 +98,11 @@ contract Common is ReentrancyGuard {
             if (msg.value < VRFfee) {
                 revert InvalidValue(VRFfee, msg.value);
             }
-            require(IERC20(tokenAddress).balanceOf(msg.sender) >= wager, "Token transfer failed.");
-            IERC20(tokenAddress).transferFrom(
-                msg.sender,
-                address(this),
-                wager
+            require(
+                IERC20(tokenAddress).balanceOf(msg.sender) >= wager,
+                "Token transfer failed."
             );
+            IERC20(tokenAddress).transferFrom(msg.sender, address(this), wager);
             _refundExcessValue(msg.value - VRFfee);
         }
         VRFFees += VRFfee;
@@ -196,7 +197,7 @@ contract Common is ReentrancyGuard {
         address tokenAddress,
         uint256 wager
     ) internal {
-        if (!Bankroll.getIsValidWager(address(this), tokenAddress)) {
+        if (!Bankroll.getIsValidWager(address(this), tokenAddress, wager)) {
             revert NotApprovedBankroll();
         }
         if (tokenAddress == address(0)) {
@@ -222,7 +223,7 @@ contract Common is ReentrancyGuard {
         uint256 wager,
         uint256 gasAmount
     ) internal {
-        if (!Bankroll.getIsValidWager(address(this), tokenAddress)) {
+        if (!Bankroll.getIsValidWager(address(this), tokenAddress, wager)) {
             revert NotApprovedBankroll();
         }
 
@@ -238,11 +239,7 @@ contract Common is ReentrancyGuard {
                 revert InvalidValue(VRFfee, msg.value);
             }
 
-            IERC20(tokenAddress).transferFrom(
-                msg.sender,
-                address(this),
-                wager
-            );
+            IERC20(tokenAddress).transferFrom(msg.sender, address(this), wager);
             _refundExcessValue(msg.value - VRFfee);
         }
         VRFFees += VRFfee;
@@ -313,8 +310,8 @@ contract Common is ReentrancyGuard {
     ) internal returns (uint256 s_requestId) {
         s_requestId = VRFCoordinatorV2Interface(ChainLinkVRF)
             .requestRandomWords(
-                0x114f3da0a805b6a67d6e9cd2ec746f7028f1b7376365af575cfea3550dd1aa04,
-                3,
+                0x79d3d8832d904592c0bf9818b621522c988bb8b0c05cdc3b15aea1b6e8db0c15,
+                13905,
                 3,
                 2500000,
                 numWords
